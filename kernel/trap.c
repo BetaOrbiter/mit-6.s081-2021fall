@@ -29,6 +29,33 @@ trapinithart(void)
   w_stvec((uint64)kernelvec);
 }
 
+int
+change_physical_page_when_duplicated_allocated(pagetable_t pagetable, uint64 va)
+{
+  if(va >= MAXVA)
+    return -1;
+  pte_t *pte = walk(pagetable, va, 0);
+  if(pte == 0)
+    return -1;
+  uint64 pa = PTE2PA(*pte);
+  uint64 flags = PTE_FLAGS(*pte);
+  if((flags&PTE_V)==0 || (flags&PTE_U)==0 || (flags&PTE_COW)==0)
+    return -1;
+  
+  if(get_ref_cnt((void*)pa) > 1){
+    uint64 new_pa = (uint64)kalloc();
+    if(new_pa == 0)
+      return -1;
+    memmove((void*)new_pa, (void*)pa, PGSIZE);
+    kfree((void*)pa);
+    pa = new_pa;
+  }
+  flags &= ~PTE_COW;
+  flags |= PTE_W;
+  *pte = (PA2PTE(pa) | flags);
+  return 0;
+}
+
 //
 // handle an interrupt, exception, or system call from user space.
 // called from trampoline.S
@@ -67,6 +94,9 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
+  } else if(r_scause() == 15){
+    if(change_physical_page_when_duplicated_allocated(p->pagetable, r_stval()) < 0)
+      p->killed = 1;
   } else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
