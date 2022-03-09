@@ -16,7 +16,7 @@ struct entry {
 struct entry *table[NBUCKET];
 int keys[NKEYS];
 int nthread = 1;
-
+static pthread_mutex_t write_locks[NBUCKET];
 
 double
 now()
@@ -36,12 +36,29 @@ insert(int key, int value, struct entry **p, struct entry *n)
   *p = e;
 }
 
+//to speed up
+static void
+insert_first(int key, int value, struct entry **p)
+{
+  struct entry *e = malloc(sizeof(struct entry));
+  e->key = key;
+  e->value = value;
+
+  pthread_mutex_lock(&write_locks[p - table]);
+  __sync_synchronize();
+  e->next = *p;
+  *p = e;
+  __sync_synchronize();
+  pthread_mutex_unlock(&write_locks[p - table]);
+}
+
 static 
 void put(int key, int value)
 {
   int i = key % NBUCKET;
 
   // is the key already present?
+  // The search here is also a critical section where two threads may duplicate the insert, but I'm a lazy guy
   struct entry *e = 0;
   for (e = table[i]; e != 0; e = e->next) {
     if (e->key == key)
@@ -52,9 +69,15 @@ void put(int key, int value)
     e->value = value;
   } else {
     // the new is new.
-    insert(key, value, &table[i], table[i]);
-  }
+    
+    //solution 1
+    // pthread_mutex_lock(&write_locks[i]);
+    // insert(key, value, &table[i], table[i]);
+    // pthread_mutex_unlock(&write_locks[i]);
 
+    //solution 2(a little faster)
+    insert_first(key, value, &table[i]);
+  }
 }
 
 static struct entry*
@@ -117,7 +140,9 @@ main(int argc, char *argv[])
   for (int i = 0; i < NKEYS; i++) {
     keys[i] = random();
   }
-
+  for(int i=0; i < NBUCKET; i++){
+    pthread_mutex_init(&write_locks[i], NULL);
+  }
   //
   // first the puts
   //
